@@ -1,1 +1,233 @@
-
+{
+"name": "brasa-brothers-backend",
+"version": "1.0.0",
+"main": "src/index.js",
+"scripts": {
+"start": "node src/index.js",
+"dev": "nodemon src/index.js"
+},
+"dependencies": {
+"bcrypt": "^5.1.0",
+"cors": "^2.8.5",
+"dotenv": "^16.0.0",
+"express": "^4.18.2",
+"jsonwebtoken": "^9.0.0",
+"sqlite3": "^5.1.6"
+},
+"devDependencies": {
+"nodemon": "^2.0.20"
+}
+}
+backend/.env.example
+PORT=4000
+JWT_SECRET=troque_por_uma_chave_secreta
+DATABASE_FILE=./database.sqlite
+backend/src/db.js
+// db.js: inicializa conexão com SQLite e cria tabelas básicas se não
+existirem
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const dbFile = process.env.DATABASE_FILE || path.join(__dirname, '..',
+'database.sqlite');
+const db = new sqlite3.Database(dbFile);
+// Cria tabelas: users, products, orders, order_items
+2
+db.serialize(() => {
+db.run(`CREATE TABLE IF NOT EXISTS users (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL,
+ email TEXT UNIQUE NOT NULL,
+ password TEXT NOT NULL
+ )`);
+db.run(`CREATE TABLE IF NOT EXISTS products (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL,
+ description TEXT,
+ price REAL NOT NULL,
+ image TEXT
+ )`);
+db.run(`CREATE TABLE IF NOT EXISTS orders (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ user_id INTEGER,
+ total REAL,
+ status TEXT DEFAULT 'pending',
+ created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY(user_id) REFERENCES users(id)
+ )`);
+db.run(`CREATE TABLE IF NOT EXISTS order_items (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ order_id INTEGER,
+ product_id INTEGER,
+ quantity INTEGER,
+ price REAL,
+ FOREIGN KEY(order_id) REFERENCES orders(id),
+ FOREIGN KEY(product_id) REFERENCES products(id)
+ )`);
+});
+module.exports = db;
+backend/src/middleware/authMiddleware.js
+// authMiddleware.js: verifica JWT em rotas que requerem usuário autenticado
+const jwt = require('jsonwebtoken');
+const SECRET = process.env.JWT_SECRET || 'dev_secret';
+function authMiddleware(req, res, next) {
+const authHeader = req.headers.authorization;
+if (!authHeader) return res.status(401).json({ error: 'Token não
+encontrado' });
+const token = authHeader.split(' ')[1];
+try {
+3
+const payload = jwt.verify(token, SECRET);
+req.user = payload; // payload deve conter id e email
+next();
+} catch (err) {
+return res.status(401).json({ error: 'Token inválido' });
+}
+}
+module.exports = authMiddleware;
+backend/src/routes/auth.js
+// auth.js: rotas de registro e login (hash de senha com bcrypt, retorno de
+JWT)
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const SECRET = process.env.JWT_SECRET || 'dev_secret';
+// Registro de usuário
+router.post('/register', async (req, res) => {
+const { name, email, password } = req.body;
+if (!name || !email || !password) return res.status(400).json({ error:
+'Dados incompletos' });
+const hashed = await bcrypt.hash(password, 10);
+const stmt = db.prepare('INSERT INTO users (name, email, password) VALUES
+(?, ?, ?)');
+stmt.run(name, email, hashed, function (err) {
+if (err) return res.status(400).json({ error: 'Email já cadastrado' });
+const user = { id: this.lastID, email };
+const token = jwt.sign(user, SECRET, { expiresIn: '7d' });
+res.json({ token, user: { id: this.lastID, name, email } });
+});
+});
+// Login
+router.post('/login', (req, res) => {
+const { email, password } = req.body;
+if (!email || !password) return res.status(400).json({ error: 'Dados
+incompletos' });
+db.get('SELECT * FROM users WHERE email = ?', [email], async (err, row) =>
+{
+if (err) return res.status(500).json({ error: 'Erro no servidor' });
+if (!row) return res.status(400).json({ error: 'Usuário não
+encontrado' });
+const match = await bcrypt.compare(password, row.password);
+if (!match) return res.status(401).json({ error: 'Senha incorreta' });
+const user = { id: row.id, email: row.email };
+4
+const token = jwt.sign(user, SECRET, { expiresIn: '7d' });
+res.json({ token, user: { id: row.id, name: row.name, email:
+row.email } });
+});
+});
+module.exports = router;
+backend/src/routes/products.js
+// products.js: gerenciamento de produtos (listar e inserir). Em um projeto
+real, separar admin.
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+// Retorna todos os produtos
+router.get('/', (req, res) => {
+db.all('SELECT * FROM products', [], (err, rows) => {
+if (err) return res.status(500).json({ error: 'Erro ao buscar
+produtos' });
+res.json(rows);
+});
+});
+// Inserir produto (simples) - ideal usar rota admin/ proteger com middleware
+router.post('/', (req, res) => {
+const { name, description, price, image } = req.body;
+if (!name || !price) return res.status(400).json({ error: 'Dados
+incompletos' });
+const stmt = db.prepare('INSERT INTO products (name, description, price,
+image) VALUES (?, ?, ?, ?)');
+stmt.run(name, description || '', price, image || '', function (err) {
+if (err) return res.status(500).json({ error: 'Erro ao inserir
+produto' });
+res.json({ id: this.lastID, name, description, price, image });
+});
+});
+module.exports = router;
+backend/src/routes/orders.js
+// orders.js: criação de pedido e listagem de pedidos do usuário autenticado
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const authMiddleware = require('../middleware/authMiddleware');
+5
+// Criar pedido (body: items = [{product_id, quantity}])
+router.post('/', authMiddleware, (req, res) => {
+const userId = req.user.id;
+const { items } = req.body; // array
+if (!items || !Array.isArray(items) || items.length === 0) return
+res.status(400).json({ error: 'Nenhum item' });
+// Calcula total e insere pedido dentro de transação simples
+db.serialize(() => {
+let total = 0;
+const placeholders = items.map(() => '?').join(',');
+// Buscar preços dos produtos necessários
+const ids = items.map(i => i.product_id);
+db.all(`SELECT id, price FROM products WHERE id IN (${placeholders})`,
+ids, (err, rows) => {
+if (err) return res.status(500).json({ error: 'Erro ao calcular
+total' });
+const priceMap = {};
+rows.forEach(r => (priceMap[r.id] = r.price));
+items.forEach(it => {
+const p = priceMap[it.product_id] || 0;
+total += p * it.quantity;
+});
+// Inserir pedido
+const insertOrder = db.prepare('INSERT INTO orders (user_id, total)
+VALUES (?, ?)');
+insertOrder.run(userId, total, function (err) {
+if (err) return res.status(500).json({ error: 'Erro ao criar
+pedido' });
+const orderId = this.lastID;
+const insertItem = db.prepare('INSERT INTO order_items (order_id,
+product_id, quantity, price) VALUES (?, ?, ?, ?)');
+items.forEach(it => {
+const price = priceMap[it.product_id] || 0;
+insertItem.run(orderId, it.product_id, it.quantity, price);
+});
+res.json({ orderId, total });
+});
+});
+});
+});
+// Listar pedidos do usuário
+router.get('/', authMiddleware, (req, res) => {
+const userId = req.user.id;
+db.all('SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC',
+[userId], (err, rows) => {
+if (err) return res.status(500).json({ error: 'Erro ao listar
+pedidos' });
+6
+res.json(rows);
+});
+});
+module.exports = router;
+backend/src/index.js
+// index.js: arquivo principal do backend — configura servidor express e
+rotas
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const app = express();
+const db = require('./db'); // garante criação das tabelas
+app.use(cors());
+app.use(express.json());
+// Rotas
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/products', require('./routes/products'));
+app.use('/api/orders', require('./routes/orders'));
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`Backend rodando na porta ${PORT}`));
