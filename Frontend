@@ -1,0 +1,258 @@
+{
+"name": "brasa-brothers-frontend",
+"version": "1.0.0",
+"scripts": {
+"dev": "vite",
+"build": "vite build",
+"preview": "vite preview"
+},
+"dependencies": {
+"react": "^18.2.0",
+"react-dom": "^18.2.0",
+"react-router-dom": "^6.14.1",
+"axios": "^1.4.0"
+},
+"devDependencies": {
+"vite": "^5.0.0"
+7
+}
+}
+frontend/src/services/api.js
+// api.js: instância axios para comunicar com o backend. Ajuste BASE_URL
+conforme seu ambiente.
+import axios from 'axios';
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const api = axios.create({ baseURL: BASE_URL });
+// Adiciona header Authorization quando token presente no localStorage
+api.interceptors.request.use(config => {
+const token = localStorage.getItem('token');
+if (token) config.headers.Authorization = `Bearer ${token}`;
+return config;
+});
+export default api;
+frontend/src/main.jsx
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import App from './App'
+import Login from './pages/Login'
+import Register from './pages/Register'
+import Menu from './pages/Menu'
+import Cart from './pages/Cart'
+import Checkout from './pages/Checkout'
+createRoot(document.getElementById('root')).render(
+<React.StrictMode>
+<BrowserRouter>
+<Routes>
+<Route path="/" element={<App />}>
+<Route index element={<Menu />} />
+<Route path="login" element={<Login />} />
+<Route path="register" element={<Register />} />
+<Route path="cart" element={<Cart />} />
+<Route path="checkout" element={<Checkout />} />
+</Route>
+</Routes>
+</BrowserRouter>
+8
+</React.StrictMode>
+)
+frontend/src/App.jsx
+import React from 'react'
+import { Outlet } from 'react-router-dom'
+import Header from './components/Header'
+export default function App(){
+return (
+<div>
+<Header />
+<main style={{ padding: 16 }}>
+<Outlet />
+</main>
+</div>
+)
+}
+frontend/src/components/Header.jsx
+import React from 'react'
+import { Link } from 'react-router-dom'
+export default function Header(){
+const user = JSON.parse(localStorage.getItem('user') || 'null');
+return (
+<header style={{ display:'flex', justifyContent:'space-between',
+padding: 12, borderBottom: '1px solid #ddd' }}>
+<div><Link to="/">Brasa Brothers</Link></div>
+<nav>
+<Link to="/">Menu</Link> {' | '}
+<Link to="/cart">Carrinho</Link> {' | '}
+{user ? <span>Olá, {user.name}</span> : <Link to="/login">Entrar</
+Link>}
+</nav>
+</header>
+)
+}
+frontend/src/pages/Menu.jsx
+import React, {useEffect, useState} from 'react'
+import api from '../services/api'
+import ProductCard from '../components/ProductCard'
+export default function Menu(){
+9
+const [products, setProducts] = useState([])
+useEffect(()=>{
+api.get('/products').then(res => setProducts(res.data)).catch(()=>{});
+},[])
+return (
+<div>
+<h2>Cardápio</h2>
+<div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit,
+minmax(220px, 1fr))', gap:12}}>
+{products.map(p => <ProductCard key={p.id} product={p} />)}
+</div>
+</div>
+)
+}
+frontend/src/components/ProductCard.jsx
+import React from 'react'
+export default function ProductCard({product}){
+function addToCart(){
+const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+const existing = cart.find(i => i.product_id === product.id);
+if(existing) existing.quantity += 1; else cart.push({product_id:
+product.id, name: product.name, price: product.price, quantity: 1});
+localStorage.setItem('cart', JSON.stringify(cart));
+alert('Adicionado ao carrinho')
+}
+return (
+<div style={{border:'1px solid #ddd', padding:12, borderRadius:8}}>
+<h3>{product.name}</h3>
+<p>{product.description}</p>
+<div>R$ {product.price.toFixed(2)}</div>
+<button onClick={addToCart}>Adicionar</button>
+</div>
+)
+}
+frontend/src/pages/Cart.jsx
+import React, {useState, useEffect} from 'react'
+import { useNavigate } from 'react-router-dom'
+export default function Cart(){
+const [cart, setCart] = useState([])
+const navigate = useNavigate()
+10
+useEffect(()=> setCart(JSON.parse(localStorage.getItem('cart') || '[]')),
+[])
+function goCheckout(){
+navigate('/checkout')
+}
+const total = cart.reduce((s,i)=> s + i.price * i.quantity, 0)
+return (
+<div>
+<h2>Carrinho</h2>
+{cart.length === 0 ? <p>Seu carrinho está vazio</p> : (
+<div>
+{cart.map((i, idx)=> (
+<div key={idx} style={{display:'flex', justifyContent:'spacebetween'}}>
+<div>{i.name} x{i.quantity}</div>
+<div>R$ { (i.price * i.quantity).toFixed(2) }</div>
+</div>
+))}
+<hr />
+<div>Total: R$ {total.toFixed(2)}</div>
+<button onClick={goCheckout}>Finalizar Pedido</button>
+</div>
+)}
+</div>
+)
+}
+frontend/src/pages/Checkout.jsx
+import React, {useState} from 'react'
+import api from '../services/api'
+import { useNavigate } from 'react-router-dom'
+export default function Checkout(){
+const navigate = useNavigate()
+const [loading, setLoading] = useState(false)
+async function placeOrder(){
+const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+if(cart.length === 0) return alert('Carrinho vazio');
+const items = cart.map(i => ({ product_id: i.product_id, quantity:
+i.quantity }))
+setLoading(true)
+try{
+const res = await api.post('/orders', { items })
+localStorage.removeItem('cart')
+11
+alert('Pedido realizado! ID: ' + res.data.orderId)
+navigate('/')
+}catch(err){
+console.error(err);
+alert('Erro ao registrar pedido. Faça login antes de finalizar.')
+}finally{ setLoading(false) }
+}
+return (
+<div>
+<h2>Finalizar Pedido</h2>
+<button onClick={placeOrder} disabled={loading}>{loading ?
+'Enviando...' : 'Confirmar Pedido'}</button>
+</div>
+)
+}
+frontend/src/pages/Login.jsx (simplificado)
+import React, {useState} from 'react'
+import api from '../services/api'
+import { useNavigate } from 'react-router-dom'
+export default function Login(){
+const [email, setEmail] = useState('')
+const [password, setPassword] = useState('')
+const navigate = useNavigate()
+async function handleLogin(e){
+e.preventDefault()
+try{
+const res = await api.post('/auth/login', { email, password })
+localStorage.setItem('token', res.data.token)
+localStorage.setItem('user', JSON.stringify(res.data.user))
+navigate('/')
+}catch(err){
+alert('Erro ao autenticar')
+}
+}
+return (
+<form onSubmit={handleLogin}>
+<h2>Entrar</h2>
+<input value={email} onChange={e=>setEmail(e.target.value)}
+placeholder="Email" />
+<input value={password} onChange={e=>setPassword(e.target.value)}
+placeholder="Senha" type="password" />
+<button type="submit">Entrar</button>
+</form>
+12
+)
+}
+frontend/src/pages/Register.jsx (simplificado)
+import React, {useState} from 'react'
+import api from '../services/api'
+import { useNavigate } from 'react-router-dom'
+export default function Register(){
+const [name,setName]=useState('')
+const [email,setEmail]=useState('')
+const [password,setPassword]=useState('')
+const navigate = useNavigate()
+async function handleRegister(e){
+e.preventDefault()
+try{
+const res = await api.post('/auth/register', { name, email, password })
+localStorage.setItem('token', res.data.token)
+localStorage.setItem('user', JSON.stringify(res.data.user))
+navigate('/')
+}catch(err){
+alert('Erro ao registrar')
+}
+}
+return (
+<form onSubmit={handleRegister}>
+<h2>Registrar</h2>
+<input value={name} onChange={e=>setName(e.target.value)}
+placeholder="Nome" />
+<input value={email} onChange={e=>setEmail(e.target.value)}
+placeholder="Email" />
+<input value={password} onChange={e=>setPassword(e.target.value)}
+placeholder="Senha" type="password" />
+<button type="submit">Registrar</button>
+</form>
+)
+}
